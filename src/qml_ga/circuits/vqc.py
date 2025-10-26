@@ -1,4 +1,3 @@
-# src/qml_ga/circuits/vqc.py
 import pennylane as qml
 from qml_ga.ansatz.base import apply_ansatz
 from qml_ga.feature_maps.amplitude_encoding import amplitude_embed
