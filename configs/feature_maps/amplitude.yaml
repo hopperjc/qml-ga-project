@@ -1,0 +1,5 @@
+# configs/feature_maps/amplitude.yaml
+feature_map:
+  type: "amplitude"
+  params:
+    normalize: true

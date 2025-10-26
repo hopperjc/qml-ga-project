@@ -1,0 +1,6 @@
+# configs/feature_maps/zz.yaml
+feature_map:
+  type: "zz"
+  params:
+    reps: 2
+    entanglement: "full"   # "full" ou "linear"
