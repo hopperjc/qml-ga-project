@@ -1,31 +1,13 @@
+# src/qml_ga/optimizers/ga.py
+from typing import Callable, Tuple, Optional
 import numpy as np
-from packaging.version import Version
 import pygad
+from qml_ga.utils.logger import append_csv_row
 
-def _pygad_fitness_wrapper(eval_solution_fn):
-    """Cria função de fitness compatível com PyGAD 2.x e 3.x."""
-    ver = Version(pygad.__version__)
-    if ver < Version("3.0.0"):
-        def fitness_v2(solution, sol_idx):
-            return float(eval_solution_fn(solution))
-        return fitness_v2
-    else:
-        def fitness_v3(ga_instance, solution, sol_idx):
-            return float(eval_solution_fn(solution))
-        return fitness_v3
-
-def _normalize_alias(name: str, kind: str):
-    name = (name or "").lower()
-    if kind == "crossover":
-        return "two_points" if name in {"two_points_crossover", "two_points"} else "single_point"
-    if kind == "mutation":
-        return "adaptive" if name in {"adaptive_mutation", "adaptive"} else "random"
-    if kind == "selection":
-        return "sss" if name in {"sss"} else "tournament"
-    return name
+ProgressLogger = Optional[Callable[[str], None]]
 
 def run_ga(
-    eval_solution_fn,
+    eval_solution_fn: Callable[[np.ndarray], float],
     num_genes: int,
     num_generations: int,
     sol_per_pop: int,
@@ -35,31 +17,61 @@ def run_ga(
     crossover_type: str,
     mutation_type: str,
     mutation_percent_genes: int,
-    init_range_low: float = -3.14,
-    init_range_high: float = 3.14,
+    init_range_low: float,
+    init_range_high: float,
     random_seed: int = 42,
-):
-    fitness_func = _pygad_fitness_wrapper(eval_solution_fn)
+    # logging
+    progress_logger: ProgressLogger = None,
+    progress_csv_path: Optional[str] = None,
+    log_every: int = 1,
+    # métricas opcionais com melhor solução da geração
+    metrics_from_solution: Optional[Callable[[np.ndarray], dict]] = None,
+) -> Tuple[np.ndarray, float, int, pygad.GA]:
+    """
+    Executa GA com PyGAD e registra progresso por geração.
+    metrics_from_solution: recebe o vetor de solução (genes) e devolve um dict com métricas adicionais para log.
+    """
+    def fitness_func(ga_inst, solution, solution_idx):
+        return eval_solution_fn(solution)
 
-    parent_selection_type = _normalize_alias(parent_selection_type, "selection")
-    crossover_type = _normalize_alias(crossover_type, "crossover")
-    mutation_type = _normalize_alias(mutation_type, "mutation")
+    def on_generation(ga_inst: pygad.GA):
+        gen = ga_inst.generations_completed
+        if gen % max(1, log_every) != 0:
+            return
+        sol, fit, idx = ga_inst.best_solution()
+        msg = f"gen {gen}/{num_generations} best_fitness={float(fit):.6f}"
+        extra = {}
+        if metrics_from_solution is not None:
+            try:
+                extra = metrics_from_solution(sol) or {}
+                if extra:
+                    msg += " " + " ".join([f"{k}={v:.4f}" if isinstance(v,(int,float)) else f"{k}={v}" for k,v in extra.items()])
+            except Exception:
+                pass
+        if progress_logger:
+            progress_logger(msg)
+        if progress_csv_path:
+            row = {"phase": "ga_gen", "generation": gen, "best_fitness": float(fit)}
+            row.update({f"best_{k}": v for k, v in extra.items()})
+            append_csv_row(progress_csv_path, row)
 
     ga = pygad.GA(
-        num_generations=int(num_generations),
-        sol_per_pop=int(sol_per_pop),
-        num_parents_mating=int(num_parents_mating),
-        num_genes=int(num_genes),
-        init_range_low=float(init_range_low),
-        init_range_high=float(init_range_high),
+        num_generations=num_generations,
+        num_parents_mating=num_parents_mating,
+        fitness_func=fitness_func,
+        sol_per_pop=sol_per_pop,
+        num_genes=num_genes,
+        init_range_low=init_range_low,
+        init_range_high=init_range_high,
         parent_selection_type=parent_selection_type,
-        keep_parents=int(keep_parents),
+        keep_parents=keep_parents,
         crossover_type=crossover_type,
         mutation_type=mutation_type,
-        mutation_percent_genes=int(mutation_percent_genes),
-        fitness_func=fitness_func,
-        random_seed=int(random_seed),
+        mutation_percent_genes=mutation_percent_genes,
+        random_seed=random_seed,
+        on_generation=on_generation,
     )
+
     ga.run()
-    solution, fitness, sol_idx = ga.best_solution()
-    return solution, float(fitness), int(sol_idx), ga
+    solution, fitness, solution_idx = ga.best_solution()
+    return np.array(solution), float(fitness), int(solution_idx), ga
