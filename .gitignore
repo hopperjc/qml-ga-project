@@ -4,6 +4,8 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 runs/
+reports/
+logs/
 data/raw/
 data/processed/
 data/splits/
