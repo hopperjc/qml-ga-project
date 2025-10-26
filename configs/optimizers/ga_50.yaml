@@ -1,0 +1,12 @@
+# configs/optimizers/ga_50.yaml
+optimizer:
+  type: "ga"
+  ga:
+    population_size: 150           # ajuste p/ Tabela II: 50 | 150 | 200
+    num_generations: 50
+    selection_type: "tournament"   # "tournament" | "steady-state"
+    crossover_type: "single_point" # "single_point" | "two_points"
+    mutation_type: "random"        # "random" | "adaptive"
+    crossover_probability: 0.8
+    mutation_probability: 0.2
+    elitism: 2

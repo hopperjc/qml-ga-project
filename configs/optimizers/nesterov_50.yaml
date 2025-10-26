@@ -1,0 +1,10 @@
+# configs/optimizers/nesterov_50.yaml
+optimizer:
+  type: "nesterov"
+  classical:
+    lr: 0.05
+    momentum: 0.9
+    epochs: 50
+    batch_size: 16
+    l2: 0.0
+    seed: 42
