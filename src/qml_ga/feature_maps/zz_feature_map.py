@@ -1,4 +1,3 @@
-# src/qml_ga/feature_maps/zz.py
 import pennylane as qml
 import numpy as np
 

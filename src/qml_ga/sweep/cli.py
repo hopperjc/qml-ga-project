@@ -1,4 +1,3 @@
-# src/qml_ga/sweep/cli.py
 import os, glob, json, argparse, itertools, traceback
 from typing import Dict, List
 import pandas as pd

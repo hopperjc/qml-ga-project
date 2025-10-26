@@ -1,4 +1,3 @@
-# src/qml_ga/optimizers/ga.py
 import numpy as np
 from packaging.version import Version
 import pygad

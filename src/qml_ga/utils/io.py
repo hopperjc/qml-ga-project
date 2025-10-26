@@ -1,4 +1,3 @@
-# src/qml_ga/utils/io.py
 import os, time, yaml
 
 def ensure_dirs(*paths):

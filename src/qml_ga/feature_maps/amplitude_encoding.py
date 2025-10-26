@@ -1,4 +1,3 @@
-# src/qml_ga/feature_maps/amplitude.py
 import pennylane as qml
 import numpy as np
 
