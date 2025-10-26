@@ -1,4 +1,4 @@
-import os, glob, json, argparse, itertools, traceback
+import os, glob, json, argparse, itertools, traceback, time
 from typing import Dict, List
 import pandas as pd
 
@@ -30,35 +30,36 @@ def _tag(cfg: Dict, ga_params: Dict = None, classical_params: Dict = None) -> st
     if classical_params:
         if "epochs" in classical_params: extras.append(f"ep={classical_params['epochs']}")
         if "lr" in classical_params: extras.append(f"lr={classical_params['lr']}")
-    return f"{ds}__{fm}__{at}_d{d}__{opt}__w{w}" + (("__" + "_".join(extras)) if extras else ""
-
-)
-
-def _save_report(rep_dir: str, cfg: Dict, summary: Dict):
-    ensure_dirs(rep_dir)
-    with open(os.path.join(rep_dir, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    pd.DataFrame(summary.get("folds", [])).to_csv(os.path.join(rep_dir, "folds.csv"), index=False)
-    write_yaml(cfg, os.path.join(rep_dir, "config.yaml"))
+    return f"{ds}__{fm}__{at}_d{d}__{opt}__w{w}" + (("__" + "_".join(extras)) if extras else "")
 
 def _append_index(reports_dir: str, row: Dict):
+    ensure_dirs(reports_dir)
     index_csv = os.path.join(reports_dir, "index.csv")
     hdr = not os.path.exists(index_csv)
     pd.DataFrame([row]).to_csv(index_csv, mode="a", header=hdr, index=False)
 
+def _product_size(grid: Dict[str, List]) -> int:
+    import math
+    n = 1
+    for v in grid.values():
+        n *= len(v)
+    return n
+
 def _iter_classical(base_cfg: Dict, opt_type: str, grid: Dict):
+    import itertools, json as _json
     keys = sorted(grid.keys()); vals = [grid[k] for k in keys]
     for comb in itertools.product(*vals):
         params = dict(zip(keys, comb))
-        cfg = json.loads(json.dumps(base_cfg))
+        cfg = _json.loads(_json.dumps(base_cfg))
         cfg["optimizer"] = {"type": opt_type, "classical": params}
         yield cfg, params
 
 def _iter_ga(base_cfg: Dict, grid: Dict):
+    import itertools, json as _json
     keys = sorted(grid.keys()); vals = [grid[k] for k in keys]
     for comb in itertools.product(*vals):
         params = dict(zip(keys, comb))
-        cfg = json.loads(json.dumps(base_cfg))
+        cfg = _json.loads(_json.dumps(base_cfg))
         cfg["optimizer"] = {"type": "ga", "ga": params}
         yield cfg, params
 
@@ -79,15 +80,35 @@ def main(
     GA_GRID = load_yaml(ga_grid_path)["ga"]
     CL_GRID = load_yaml(classical_grid_path)["classical"]
 
-    count = 0
+    # pré-cálculo para contagem total de combinações (apenas para logging)
+    total_combos = 0
+    for ds in DS:
+        for fm in FM:
+            try:
+                dev = _derive_device(ds, fm)
+            except Exception:
+                continue
+            if dev["device"]["wires"] > max_wires:
+                continue
+            for an in AN:
+                total_combos += _product_size(CL_GRID["adam"])
+                total_combos += _product_size(CL_GRID["nesterov"])
+                total_combos += _product_size(GA_GRID)
+
+    combo_idx = 0
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[SWEEP] start={started_at} total_combos={total_combos}", flush=True)
+
     for ds in DS:
         for fm in FM:
             try:
                 dev = _derive_device(ds, fm)
             except Exception as e:
-                print(f"[SKIP] derive_device ({ds['_file']},{fm['_file']}): {e}"); continue
+                print(f"[SKIP] derive_device ({ds['_file']},{fm['_file']}): {e}", flush=True)
+                continue
             if dev["device"]["wires"] > max_wires:
-                print(f"[SKIP] wires={dev['device']['wires']}>max={max_wires}"); continue
+                print(f"[SKIP] wires={dev['device']['wires']}>max={max_wires}", flush=True)
+                continue
 
             for an in AN:
                 base_cfg = {
@@ -99,23 +120,46 @@ def main(
                 # Clássicos
                 for opt_type, grid in [("adam", CL_GRID["adam"]), ("nesterov", CL_GRID["nesterov"])]:
                     for cfgC, params in _iter_classical(base_cfg, opt_type, grid):
+                        combo_idx += 1
                         tag = _tag(cfgC, classical_params=params)
+                        prefix = f"[{combo_idx}/{total_combos}] {tag}"
                         if dry_run:
-                            print("[DRY]", tag)
-                            count += 1
-                            if limit and count >= limit: return
+                            print(f"{prefix} [DRY]", flush=True)
+                            if limit and combo_idx >= limit: return
                             continue
-                        run_dir = make_run_dir(runs_dir); write_yaml(cfgC, os.path.join(run_dir, "config_snapshot.yaml"))
+
+                        run_dir = make_run_dir(runs_dir)
+                        write_yaml(cfgC, os.path.join(run_dir, "config_snapshot.yaml"))
+
+                        rep_dir = os.path.join(reports_dir, tag)
+                        ensure_dirs(rep_dir)
+                        # salve a config também no relatório (para acompanhar enquanto treina)
+                        write_yaml(cfgC, os.path.join(rep_dir, "config.yaml"))
+
+                        print(f"{prefix} [START]", flush=True)
                         try:
-                            summary = run_kfold_experiment(cfgC, run_dir)
+                            summary = run_kfold_experiment(
+                                cfgC, run_dir,
+                                report_dir=rep_dir,
+                                progress=True,
+                                progress_prefix=prefix
+                            )
                         except Exception as e:
-                            print(f"[FAIL] {tag}: {e}")
-                            if trace: print(traceback.format_exc())
+                            print(f"{prefix} [FAIL] {e}", flush=True)
+                            if trace:
+                                print(traceback.format_exc(), flush=True)
+                            # marca status como failed
+                            try:
+                                with open(os.path.join(rep_dir, "status.json"), "r+", encoding="utf-8") as f:
+                                    st = json.load(f)
+                                    st["failed"] = True
+                                    f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
+                            except Exception:
+                                pass
                             if abort_on_fail: raise
-                            count += 1
-                            if limit and count >= limit: return
+                            if limit and combo_idx >= limit: return
                             continue
-                        rep_dir = os.path.join(reports_dir, tag); _save_report(rep_dir, cfgC, summary)
+
                         _append_index(reports_dir, {
                             "tag": tag, "run_dir": run_dir,
                             "dataset": cfgC["dataset"]["name"], "feature_map": cfgC["feature_map"]["type"],
@@ -126,29 +170,49 @@ def main(
                             "std_accuracy": summary.get("std_accuracy"),
                             "objective_name": summary.get("objective_name",""),
                         })
-                        print(f"[OK] {tag} | mean_acc={summary.get('mean_accuracy'):.4f}")
-                        count += 1
-                        if limit and count >= limit: return
+                        print(f"{prefix} [OK] mean_acc={summary.get('mean_accuracy'):.4f}", flush=True)
+                        if limit and combo_idx >= limit: return
 
                 # GA
                 for cfgG, ga_params in _iter_ga(base_cfg, GA_GRID):
+                    combo_idx += 1
                     tag = _tag(cfgG, ga_params=ga_params)
+                    prefix = f"[{combo_idx}/{total_combos}] {tag}"
                     if dry_run:
-                        print("[DRY]", tag)
-                        count += 1
-                        if limit and count >= limit: return
+                        print(f"{prefix} [DRY]", flush=True)
+                        if limit and combo_idx >= limit: return
                         continue
-                    run_dir = make_run_dir(runs_dir); write_yaml(cfgG, os.path.join(run_dir, "config_snapshot.yaml"))
+
+                    run_dir = make_run_dir(runs_dir)
+                    write_yaml(cfgG, os.path.join(run_dir, "config_snapshot.yaml"))
+
+                    rep_dir = os.path.join(reports_dir, tag)
+                    ensure_dirs(rep_dir)
+                    write_yaml(cfgG, os.path.join(rep_dir, "config.yaml"))
+
+                    print(f"{prefix} [START]", flush=True)
                     try:
-                        summary = run_kfold_experiment(cfgG, run_dir)
+                        summary = run_kfold_experiment(
+                            cfgG, run_dir,
+                            report_dir=rep_dir,
+                            progress=True,
+                            progress_prefix=prefix
+                        )
                     except Exception as e:
-                        print(f"[FAIL] {tag}: {e}")
-                        if trace: print(traceback.format_exc())
+                        print(f"{prefix} [FAIL] {e}", flush=True)
+                        if trace:
+                            print(traceback.format_exc(), flush=True)
+                        try:
+                            with open(os.path.join(rep_dir, "status.json"), "r+", encoding="utf-8") as f:
+                                st = json.load(f)
+                                st["failed"] = True
+                                f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
+                        except Exception:
+                            pass
                         if abort_on_fail: raise
-                        count += 1
-                        if limit and count >= limit: return
+                        if limit and combo_idx >= limit: return
                         continue
-                    rep_dir = os.path.join(reports_dir, tag); _save_report(rep_dir, cfgG, summary)
+
                     _append_index(reports_dir, {
                         "tag": tag, "run_dir": run_dir,
                         "dataset": cfgG["dataset"]["name"], "feature_map": cfgG["feature_map"]["type"],
@@ -159,12 +223,11 @@ def main(
                         "std_accuracy": summary.get("std_accuracy"),
                         "objective_name": summary.get("objective_name",""),
                     })
-                    print(f"[OK] {tag} | mean_acc={summary.get('mean_accuracy'):.4f}")
-                    count += 1
-                    if limit and count >= limit: return
+                    print(f"{prefix} [OK] mean_acc={summary.get('mean_accuracy'):.4f}", flush=True)
+                    if limit and combo_idx >= limit: return
 
 def entrypoint():
-    ap = argparse.ArgumentParser(description="Varredura de todas as combinações + grade do GA e clássicos.")
+    ap = argparse.ArgumentParser(description="Varredura de todas as combinações + grade do GA e clássicos, com progresso e salvamento incremental.")
     ap.add_argument("--datasets_dir", default="configs/datasets")
     ap.add_argument("--feature_maps_dir", default="configs/feature_maps")
     ap.add_argument("--ansatz_dir", default="configs/ansatz")
