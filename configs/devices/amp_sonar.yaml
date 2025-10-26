@@ -1,0 +1,5 @@
+# configs/devices/amp_sonar.yaml      # 60 features -> ceil(log2(60)) = 6
+device:
+  name: "default.qubit"
+  wires: 6
+  shots: null

@@ -1,0 +1,5 @@
+# configs/devices/amp_wdbc.yaml       # 30 features -> ceil(log2(30)) = 5
+device:
+  name: "default.qubit"
+  wires: 5
+  shots: null

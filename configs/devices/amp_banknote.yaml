@@ -1,0 +1,5 @@
+# configs/devices/amp_banknote.yaml   # 4 features -> ceil(log2(4)) = 2
+device:
+  name: "default.qubit"
+  wires: 2
+  shots: null

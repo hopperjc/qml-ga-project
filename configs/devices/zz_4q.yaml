@@ -1,0 +1,5 @@
+# configs/devices/zz_4q.yaml          # ZZ precisa 1 wire por feature (aqui 4)
+device:
+  name: "default.qubit"
+  wires: 4
+  shots: null
