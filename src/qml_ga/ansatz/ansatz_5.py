@@ -1,4 +1,3 @@
-# src/qml_ga/ansatz/ansatz5.py
 import pennylane as qml
 
 def ansatz_5(W_slice, wires):

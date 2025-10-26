@@ -1,4 +1,3 @@
-# src/qml_ga/ansatz/base.py
 from typing import Dict, Sequence
 import pennylane.numpy as qnp
 
