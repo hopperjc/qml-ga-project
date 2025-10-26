@@ -1,0 +1,4 @@
+ansatz:
+  type: "ansatz_6"
+  params:
+    depth: 20
