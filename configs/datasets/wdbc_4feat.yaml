@@ -1,0 +1,17 @@
+# configs/datasets/wdbc_4feat.yaml
+dataset:
+  name: "breast_cancer_wdbc_4feat"
+  path: "data/processed/breast_cancer_wdbc/dataset_normalized.csv"
+  target: "target"
+  features:
+    use: "first_k"
+    first_k: 4
+    names: []
+  kfold:
+    n_splits: 10
+    shuffle: true
+    stratified: true
+    seed: 42
+  balance:
+    method: "smote"
+    k_neighbors: 5

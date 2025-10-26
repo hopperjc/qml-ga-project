@@ -1,0 +1,14 @@
+# configs/datasets/sonar.yaml
+dataset:
+  name: "sonar"
+  path: "data/processed/sonar/dataset_normalized.csv"
+  target: "target"
+  features:
+    use: "all"
+    first_k: null
+    names: []
+  kfold:
+    n_splits: 10
+    shuffle: true
+    stratified: true
+    seed: 42

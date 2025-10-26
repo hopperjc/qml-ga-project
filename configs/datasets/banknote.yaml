@@ -1,0 +1,14 @@
+# configs/datasets/banknote.yaml
+dataset:
+  name: "banknote_authentication"
+  path: "data/processed/banknote_authentication/dataset_normalized.csv"
+  target: "target"
+  features:
+    use: "all"          # "all" | "first_k" | "names"
+    first_k: null
+    names: []
+  kfold:
+    n_splits: 10
+    shuffle: true
+    stratified: true
+    seed: 42
