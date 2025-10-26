@@ -1,4 +1,3 @@
-# src/qml_ga/optimizers/ga.py
 from typing import Callable, Tuple, Optional
 import numpy as np
 import pygad

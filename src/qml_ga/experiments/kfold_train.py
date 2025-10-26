@@ -1,4 +1,3 @@
-# src/qml_ga/experiments/kfold_train.py
 from typing import Dict, Any, List, Optional, Tuple
 import os, json, time
 import numpy as np

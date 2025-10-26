@@ -1,4 +1,3 @@
-# src/qml_ga/optimizers/classical.py
 from typing import Tuple, Callable, Optional
 import numpy as np
 import pennylane as qml
