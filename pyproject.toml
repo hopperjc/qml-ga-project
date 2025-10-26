@@ -1,41 +1,52 @@
-[project]
+[tool.poetry]
 name = "qml-ga-project"
 version = "0.1.0"
-description = "VQC treinado por Algoritmo Genético em PennyLane com comparação de Feature Maps"
+description = "Varredura, treino e estatística para VQCs otimizados por Algoritmos Genéticos e otimizadores clássicos"
+authors = ["Matheus Hopper <mhjc@cin.ufpe.br>"]
 readme = "README.md"
-requires-python = ">=3.10"
-authors = [{ name = "Matheus", email = "you@example.com" }]
-
-# Dependências principais
-dependencies = [
-  "pennylane>=0.39,<0.41",
-  "pennylane-lightning>=0.39,<0.41",
-  "pygad>=3.2,<3.3",
-  "numpy>=1.26,<2.0",
-  "pandas>=2.2,<2.3",
-  "scikit-learn>=1.5,<1.6",
-  "imbalanced-learn>=0.12,<0.13",
-  "matplotlib>=3.9,<3.10",
-  "scipy>=1.13,<1.14",
-  "pyyaml>=6.0.2,<7.0",
-]
-
-# Entry point da CLI
-[project.scripts]
-qmlga = "qml_ga.cli:main"
-
-# Mapeia o layout em src/ para empacotamento
-[tool.poetry]
 packages = [{ include = "qml_ga", from = "src" }]
 
-# Grupos de dependências de desenvolvimento
+[tool.poetry.dependencies]
+python = ">=3.12"
+
+# Núcleo científico (versões estáveis no Windows + Py3.12)
+numpy = ">=1.26,<2.0"
+scipy = ">=1.11,<2.0"
+pandas = "^2.2"
+matplotlib = "^3.8"
+PyYAML = "^6.0"
+
+# ML clássico
+scikit-learn = "^1.5"
+imbalanced-learn = "^0.12"
+
+# Quantum + GA
+pennylane = ">=0.33,<0.40"
+autoray = "<0.7"
+pygad = "^3.2"
+
+# Estatística
+statsmodels = "^0.14"
+
+# (opcional) utilitários
+typing-extensions = "^4.12"
+
 [tool.poetry.group.dev.dependencies]
-ruff = "^0.6.8"
+ipykernel = "^6.29"
+black = "^24.8.0"
+ruff = "^0.6.9"
 pytest = "^8.3"
 
-[tool.ruff]
-line-length = 100
+[tool.poetry.scripts]
+# Runner básico (se você mantiver qml_ga/cli.py)
+qmlga = "qml_ga.cli:main"
+
+# Varredura total (gera e roda todas as combinações + GA hypergrid)
+qmlga-sweep = "qml_ga.sweep.cli:entrypoint"
+
+# Seleciona vencedores por arquitetura e roda a estatística (GA > Grad)
+qmlga-beststats = "qml_ga.sweep.best:entrypoint"
 
 [build-system]
-requires = ["poetry-core>=2.0.0"]
+requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
