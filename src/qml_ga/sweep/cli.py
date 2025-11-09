@@ -1,5 +1,5 @@
-import os, glob, json, argparse, itertools, traceback, time
-from typing import Dict, List
+import os, glob, json, argparse, itertools, traceback, time, math
+from typing import Dict, List, Optional
 import pandas as pd
 
 from qml_ga.utils.io import load_yaml, write_yaml, make_run_dir, ensure_dirs, setup_cwd_to_repo_root
@@ -39,7 +39,6 @@ def _append_index(reports_dir: str, row: Dict):
     pd.DataFrame([row]).to_csv(index_csv, mode="a", header=hdr, index=False)
 
 def _product_size(grid: Dict[str, List]) -> int:
-    import math
     n = 1
     for v in grid.values():
         n *= len(v)
@@ -63,6 +62,35 @@ def _iter_ga(base_cfg: Dict, grid: Dict):
         cfg["optimizer"] = {"type": "ga", "ga": params}
         yield cfg, params
 
+# ----------------------------
+# Helpers para compatibilidade
+# ----------------------------
+def _extract_val_mean_accuracy(summary: Dict) -> Optional[float]:
+    """Tenta pegar a acurácia média de validação do summary (novo e antigo)."""
+    # Novo esquema
+    if isinstance(summary.get("val_mean"), dict) and "accuracy" in summary["val_mean"]:
+        return float(summary["val_mean"]["accuracy"])
+    # Antigo: mean_accuracy direto
+    if "mean_accuracy" in summary and summary["mean_accuracy"] is not None:
+        return float(summary["mean_accuracy"])
+    return None
+
+def _extract_val_std_accuracy(summary: Dict) -> Optional[float]:
+    """Tenta pegar o desvio padrão de acurácia de validação."""
+    if isinstance(summary.get("val_std"), dict) and "accuracy" in summary["val_std"]:
+        return float(summary["val_std"]["accuracy"])
+    if "std_accuracy" in summary and summary["std_accuracy"] is not None:
+        return float(summary["std_accuracy"])
+    return None
+
+def _fmt_acc(val: Optional[float]) -> str:
+    try:
+        return f"{float(val):.4f}"
+    except Exception:
+        return "nan"
+
+# ----------------------------
+
 def main(
     datasets_dir="configs/datasets", feature_maps_dir="configs/feature_maps",
     ansatz_dir="configs/ansatz", ga_grid_path="configs/hypergrids/ga.yaml",
@@ -80,7 +108,7 @@ def main(
     GA_GRID = load_yaml(ga_grid_path)["ga"]
     CL_GRID = load_yaml(classical_grid_path)["classical"]
 
-    # pré-cálculo para contagem total de combinações (apenas para logging)
+    # pré-cálculo para contagem total
     total_combos = 0
     for ds in DS:
         for fm in FM:
@@ -133,7 +161,6 @@ def main(
 
                         rep_dir = os.path.join(reports_dir, tag)
                         ensure_dirs(rep_dir)
-                        # salve a config também no relatório (para acompanhar enquanto treina)
                         write_yaml(cfgC, os.path.join(rep_dir, "config.yaml"))
 
                         print(f"{prefix} [START]", flush=True)
@@ -160,17 +187,20 @@ def main(
                             if limit and combo_idx >= limit: return
                             continue
 
+                        mean_acc = _extract_val_mean_accuracy(summary)
+                        std_acc = _extract_val_std_accuracy(summary)
+                        print(f"{prefix} [OK] val_mean_acc={_fmt_acc(mean_acc)}", flush=True)
+
                         _append_index(reports_dir, {
                             "tag": tag, "run_dir": run_dir,
                             "dataset": cfgC["dataset"]["name"], "feature_map": cfgC["feature_map"]["type"],
                             "ansatz": cfgC["ansatz"]["type"], "depth": cfgC["ansatz"].get("params",{}).get("depth",""),
                             "optimizer": opt_type, "params": json.dumps(params),
                             "device_wires": cfgC["device"]["wires"],
-                            "mean_accuracy": summary.get("mean_accuracy"),
-                            "std_accuracy": summary.get("std_accuracy"),
+                            "mean_accuracy": mean_acc,
+                            "std_accuracy": std_acc,
                             "objective_name": summary.get("objective_name",""),
                         })
-                        print(f"{prefix} [OK] mean_acc={summary.get('mean_accuracy'):.4f}", flush=True)
                         if limit and combo_idx >= limit: return
 
                 # GA
@@ -213,17 +243,20 @@ def main(
                         if limit and combo_idx >= limit: return
                         continue
 
+                    mean_acc = _extract_val_mean_accuracy(summary)
+                    std_acc = _extract_val_std_accuracy(summary)
+                    print(f"{prefix} [OK] val_mean_acc={_fmt_acc(mean_acc)}", flush=True)
+
                     _append_index(reports_dir, {
                         "tag": tag, "run_dir": run_dir,
                         "dataset": cfgG["dataset"]["name"], "feature_map": cfgG["feature_map"]["type"],
                         "ansatz": cfgG["ansatz"]["type"], "depth": cfgG["ansatz"].get("params",{}).get("depth",""),
                         "optimizer": "ga", "params": json.dumps(ga_params),
                         "device_wires": cfgG["device"]["wires"],
-                        "mean_accuracy": summary.get("mean_accuracy"),
-                        "std_accuracy": summary.get("std_accuracy"),
+                        "mean_accuracy": mean_acc,
+                        "std_accuracy": std_acc,
                         "objective_name": summary.get("objective_name",""),
                     })
-                    print(f"{prefix} [OK] mean_acc={summary.get('mean_accuracy'):.4f}", flush=True)
                     if limit and combo_idx >= limit: return
 
 def entrypoint():

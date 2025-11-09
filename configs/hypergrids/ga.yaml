@@ -1,6 +1,6 @@
 ga:
   num_generations: [50]
-  population_size: [50, 150, 200]
+  population_size: [50, 150]
   selection_type: ["tournament", "steady-state"]
   crossover_type: ["single_point", "two_points"]
   mutation_type: ["random", "adaptive"]

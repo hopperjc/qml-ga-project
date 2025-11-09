@@ -14,7 +14,7 @@ def build_vqc(ansatz_type: str, depth: int, n_qubits: int, feature_map: str = "a
         if fm == "amplitude":
             amplitude_embed(x, wires=wires)
         elif fm == "zz":
-            zz_feature_map(x, wires=wires, with_h=False)
+            zz_feature_map(x, wires=wires, with_h=True)
         else:
             raise ValueError(f"Feature map desconhecido: {feature_map}")
 

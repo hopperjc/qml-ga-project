@@ -1,7 +1,7 @@
 import pennylane as qml
 import numpy as np
 
-def zz_feature_map(x, wires, alpha=1.0, with_h=False):
+def zz_feature_map(x, wires, alpha=2.0, with_h=False):
     """
     'ZZFeatureMap' estilo Qiskit: RZ(x_i) + e^{i*alpha*x_i*x_j Z_i Z_j}.
     Opcional: camadas de Hadamard antes/depois (with_h=True).
@@ -20,8 +20,8 @@ def zz_feature_map(x, wires, alpha=1.0, with_h=False):
     for i in range(n):
         for j in range(i + 1, n):
             qml.CNOT(wires=[wires[i], wires[j]])
-            qml.RZ(alpha * x[i] * x[j], wires=wires[j])
+            qml.RZ(alpha * (np.pi - x[i]) * (np.pi - x[j]), wires=wires[j])
             qml.CNOT(wires=[wires[i], wires[j]])
-    if with_h:
-        for w in wires:
-            qml.Hadamard(wires=w)
+    # if with_h:
+    #     for w in wires:
+    #         qml.Hadamard(wires=w)

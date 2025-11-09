@@ -47,6 +47,8 @@ qmlga-sweep = "qml_ga.sweep.cli:entrypoint"
 # Seleciona vencedores por arquitetura e roda a estatística (GA > Grad)
 qmlga-beststats = "qml_ga.sweep.best:entrypoint"
 
+qmlga-single = "qml_ga.single.cli:entrypoint"
+
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"

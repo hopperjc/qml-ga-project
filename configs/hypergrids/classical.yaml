@@ -1,10 +1,10 @@
 classical:
   adam:
     lr: [0.05]
-    epochs: [50, 200]
+    epochs: [100]
     batch_size: [16]
   nesterov:
     lr: [0.05]
     momentum: [0.9]
-    epochs: [50, 200]
+    epochs: [100]
     batch_size: [16]
