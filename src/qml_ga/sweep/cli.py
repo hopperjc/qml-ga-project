@@ -1,4 +1,4 @@
-import os, glob, json, argparse, itertools, traceback, time, math
+import os, glob, json, argparse, traceback, time
 from typing import Dict, List, Optional
 import pandas as pd
 
@@ -33,10 +33,13 @@ def _tag(cfg: Dict, ga_params: Dict = None, classical_params: Dict = None) -> st
     return f"{ds}__{fm}__{at}_d{d}__{opt}__w{w}" + (("__" + "_".join(extras)) if extras else "")
 
 def _append_index(reports_dir: str, row: Dict):
-    ensure_dirs(reports_dir)
-    index_csv = os.path.join(reports_dir, "index.csv")
-    hdr = not os.path.exists(index_csv)
-    pd.DataFrame([row]).to_csv(index_csv, mode="a", header=hdr, index=False)
+    parts_dir = os.path.join(reports_dir, "_index_parts")
+    ensure_dirs(parts_dir)
+    jid = os.getenv("SLURM_JOB_ID", "nojid")
+    aid = os.getenv("SLURM_ARRAY_TASK_ID", "noaid")
+    part_path = os.path.join(parts_dir, f"index.{jid}.{aid}.csv")
+    hdr = not os.path.exists(part_path)
+    pd.DataFrame([row]).to_csv(part_path, mode="a", header=hdr, index=False)
 
 def _product_size(grid: Dict[str, List]) -> int:
     n = 1
@@ -62,21 +65,14 @@ def _iter_ga(base_cfg: Dict, grid: Dict):
         cfg["optimizer"] = {"type": "ga", "ga": params}
         yield cfg, params
 
-# ----------------------------
-# Helpers para compatibilidade
-# ----------------------------
 def _extract_val_mean_accuracy(summary: Dict) -> Optional[float]:
-    """Tenta pegar a acurácia média de validação do summary (novo e antigo)."""
-    # Novo esquema
     if isinstance(summary.get("val_mean"), dict) and "accuracy" in summary["val_mean"]:
         return float(summary["val_mean"]["accuracy"])
-    # Antigo: mean_accuracy direto
     if "mean_accuracy" in summary and summary["mean_accuracy"] is not None:
         return float(summary["mean_accuracy"])
     return None
 
 def _extract_val_std_accuracy(summary: Dict) -> Optional[float]:
-    """Tenta pegar o desvio padrão de acurácia de validação."""
     if isinstance(summary.get("val_std"), dict) and "accuracy" in summary["val_std"]:
         return float(summary["val_std"]["accuracy"])
     if "std_accuracy" in summary and summary["std_accuracy"] is not None:
@@ -89,7 +85,21 @@ def _fmt_acc(val: Optional[float]) -> str:
     except Exception:
         return "nan"
 
-# ----------------------------
+def _auto_shard_from_env(shard_index: Optional[int], shard_total: Optional[int]):
+    if shard_index is None:
+        sid = os.getenv("SLURM_ARRAY_TASK_ID")
+        if sid is not None:
+            shard_index = int(sid)
+    if shard_total is None:
+        stc = os.getenv("SLURM_ARRAY_TASK_COUNT")
+        if stc is not None:
+            shard_total = int(stc)
+    return shard_index, shard_total
+
+def _belongs_to_shard(combo_idx_1based: int, shard_index: Optional[int], shard_total: Optional[int]) -> bool:
+    if shard_total is None or shard_total <= 1 or shard_index is None:
+        return True
+    return ((combo_idx_1based - 1) % shard_total) == shard_index
 
 def main(
     datasets_dir="configs/datasets", feature_maps_dir="configs/feature_maps",
@@ -98,6 +108,8 @@ def main(
     reports_dir="reports", runs_dir="runs",
     include_feature_maps="amplitude,zz", max_wires=12, dry_run=False,
     trace=False, abort_on_fail=False, limit: int = 0,
+    shard_index: Optional[int] = None, shard_total: Optional[int] = None,
+    print_total_only: bool = False,
 ):
     setup_cwd_to_repo_root()
     ensure_dirs(reports_dir, runs_dir)
@@ -108,7 +120,6 @@ def main(
     GA_GRID = load_yaml(ga_grid_path)["ga"]
     CL_GRID = load_yaml(classical_grid_path)["classical"]
 
-    # pré-cálculo para contagem total
     total_combos = 0
     for ds in DS:
         for fm in FM:
@@ -118,15 +129,23 @@ def main(
                 continue
             if dev["device"]["wires"] > max_wires:
                 continue
-            for an in AN:
+            for _ in AN:
                 total_combos += _product_size(CL_GRID["adam"])
                 total_combos += _product_size(CL_GRID["nesterov"])
                 total_combos += _product_size(GA_GRID)
 
-    combo_idx = 0
+    if print_total_only:
+        print(total_combos)
+        return
+
+    shard_index, shard_total = _auto_shard_from_env(shard_index, shard_total)
+
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[SWEEP] start={started_at} total_combos={total_combos}", flush=True)
+    print(f"[SWEEP] include_feature_maps={include_feature_maps} max_wires={max_wires} dry_run={dry_run} abort_on_fail={abort_on_fail} trace={trace} limit={limit}", flush=True)
+    print(f"[SWEEP] shards: index={shard_index} total={shard_total}", flush=True)
 
+    combo_idx = 0
     for ds in DS:
         for fm in FM:
             try:
@@ -145,15 +164,18 @@ def main(
                     "seed": 42, "output": {"base_dir": runs_dir, "save_specs": False},
                 }
 
-                # Clássicos
                 for opt_type, grid in [("adam", CL_GRID["adam"]), ("nesterov", CL_GRID["nesterov"])]:
                     for cfgC, params in _iter_classical(base_cfg, opt_type, grid):
                         combo_idx += 1
+                        if limit and combo_idx > limit:
+                            return
+                        if not _belongs_to_shard(combo_idx, shard_index, shard_total):
+                            continue
+
                         tag = _tag(cfgC, classical_params=params)
                         prefix = f"[{combo_idx}/{total_combos}] {tag}"
                         if dry_run:
                             print(f"{prefix} [DRY]", flush=True)
-                            if limit and combo_idx >= limit: return
                             continue
 
                         run_dir = make_run_dir(runs_dir)
@@ -175,7 +197,6 @@ def main(
                             print(f"{prefix} [FAIL] {e}", flush=True)
                             if trace:
                                 print(traceback.format_exc(), flush=True)
-                            # marca status como failed
                             try:
                                 with open(os.path.join(rep_dir, "status.json"), "r+", encoding="utf-8") as f:
                                     st = json.load(f)
@@ -183,8 +204,8 @@ def main(
                                     f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
                             except Exception:
                                 pass
-                            if abort_on_fail: raise
-                            if limit and combo_idx >= limit: return
+                            if abort_on_fail:
+                                raise
                             continue
 
                         mean_acc = _extract_val_mean_accuracy(summary)
@@ -201,16 +222,18 @@ def main(
                             "std_accuracy": std_acc,
                             "objective_name": summary.get("objective_name",""),
                         })
-                        if limit and combo_idx >= limit: return
 
-                # GA
                 for cfgG, ga_params in _iter_ga(base_cfg, GA_GRID):
                     combo_idx += 1
+                    if limit and combo_idx > limit:
+                        return
+                    if not _belongs_to_shard(combo_idx, shard_index, shard_total):
+                        continue
+
                     tag = _tag(cfgG, ga_params=ga_params)
                     prefix = f"[{combo_idx}/{total_combos}] {tag}"
                     if dry_run:
                         print(f"{prefix} [DRY]", flush=True)
-                        if limit and combo_idx >= limit: return
                         continue
 
                     run_dir = make_run_dir(runs_dir)
@@ -239,8 +262,8 @@ def main(
                                 f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
                         except Exception:
                             pass
-                        if abort_on_fail: raise
-                        if limit and combo_idx >= limit: return
+                        if abort_on_fail:
+                            raise
                         continue
 
                     mean_acc = _extract_val_mean_accuracy(summary)
@@ -257,10 +280,9 @@ def main(
                         "std_accuracy": std_acc,
                         "objective_name": summary.get("objective_name",""),
                     })
-                    if limit and combo_idx >= limit: return
 
 def entrypoint():
-    ap = argparse.ArgumentParser(description="Varredura de todas as combinações + grade do GA e clássicos, com progresso e salvamento incremental.")
+    ap = argparse.ArgumentParser(description="Sweep com sharding SLURM e gravação incremental.")
     ap.add_argument("--datasets_dir", default="configs/datasets")
     ap.add_argument("--feature_maps_dir", default="configs/feature_maps")
     ap.add_argument("--ansatz_dir", default="configs/ansatz")
@@ -274,6 +296,9 @@ def entrypoint():
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--abort_on_fail", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--shard_index", type=int, default=None)
+    ap.add_argument("--shard_total", type=int, default=None)
+    ap.add_argument("--print_total_only", action="store_true")
     args = ap.parse_args()
     main(**vars(args))
 
