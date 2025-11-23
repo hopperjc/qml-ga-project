@@ -1,5 +1,5 @@
 from typing import Dict, Any, List, Optional, Tuple
-import os, json, time
+import os, json, time, signal
 import numpy as np
 import pandas as pd
 import pennylane.numpy as qnp
@@ -23,7 +23,7 @@ def _train_one_fold_get_params(
     progress_logger=None,
     train_progress_csv: Optional[str] = None,
 ) -> Tuple[np.ndarray, float]:
-    """Treina e retorna (W, b). Faz logging/CSV durante o treinamento."""
+    """Treina e retorna (W, b)."""
     n_qubits = int(cfg["device"]["wires"])
     depth = int(cfg["ansatz"]["params"]["depth"])
     ansatz_type = cfg["ansatz"]["type"]
@@ -32,7 +32,6 @@ def _train_one_fold_get_params(
     _, circuit = build_vqc(ansatz_type, depth, n_qubits, feature_map=fm_type, shots=cfg["device"].get("shots"))
     P = params_per_wire(ansatz_type)
 
-    # init
     W0 = init_weights(ansatz_type, n_qubits, depth, scale=0.1, seed=42)
     b0 = 0.0
 
@@ -47,19 +46,19 @@ def _train_one_fold_get_params(
             W = unflatten_weights(w, ansatz_type, n_qubits, depth)
             logits = _predict_logits(circuit, W, b, X_tr)
             y_pred = (logits >= 0).astype(float) * 2 - 1
-            return float((y_tr == y_pred).mean())  # fitness: acc treino
+            return float((y_tr == y_pred).mean())
 
         def metrics_from_solution(sol_vec):
             w, b = sol_vec[:-1], sol_vec[-1]
             W = unflatten_weights(w, ansatz_type, n_qubits, depth)
             m_tr = all_metrics(y_tr, _predict_logits(circuit, W, b, X_tr))
-            out = { "train_acc": m_tr["accuracy"], "train_f1": m_tr["f1"] }
+            out = {"train_acc": m_tr["accuracy"], "train_f1": m_tr["f1"]}
             if X_va is not None and y_va is not None:
                 m_va = all_metrics(y_va, _predict_logits(circuit, W, b, X_va))
-                out.update({ "val_acc": m_va["accuracy"], "val_f1": m_va["f1"] })
+                out.update({"val_acc": m_va["accuracy"], "val_f1": m_va["f1"]})
             return out
 
-        sol, fit, _, _ = run_ga(
+        sol, _, _, _ = run_ga(
             eval_solution_fn=f_train,
             num_genes=num_genes,
             num_generations=int(ga["num_generations"]),
@@ -82,7 +81,7 @@ def _train_one_fold_get_params(
         W = unflatten_weights(w, ansatz_type, n_qubits, depth)
         return W, float(b)
 
-    # clássicos: log por batch/epoch + métricas opcionais de validação
+    # clássicos
     cls = cfg["optimizer"]["classical"]
     Wf, bf, _ = train_classical(
         circuit, qnp.array(W0), b0,
@@ -90,12 +89,51 @@ def _train_one_fold_get_params(
         optimizer_type=opt_type, lr=float(cls["lr"]),
         epochs=int(cls["epochs"]), batch_size=int(cls["batch_size"]),
         progress_logger=progress_logger,
-        progress_csv_path=train_progress_csv,
-        log_batch_every=max(1, int(np.ceil(len(X_tr) / int(cls["batch_size"])) // 4)),  # 4 logs por época
+        train_progress_csv=train_progress_csv,
+        log_batch_every=0,  # pode ajustar para logs por batch; epoch já loga
         eval_every=1,
         X_val=X_va, y_val=y_va,
     )
     return np.array(Wf), float(bf)
+
+def _load_previous_progress(report_dir: str):
+    """Carrega progresso salvo: status.json e folds.csv, se existirem."""
+    status_path = os.path.join(report_dir, "status.json")
+    folds_path = os.path.join(report_dir, "folds.csv")
+
+    status = {}
+    if os.path.exists(status_path):
+        try:
+            with open(status_path, "r", encoding="utf-8") as f:
+                status = json.load(f)
+        except Exception:
+            status = {}
+
+    prev_folds: List[Dict[str, Any]] = []
+    if os.path.exists(folds_path):
+        try:
+            df = pd.read_csv(folds_path)
+            for _, r in df.iterrows():
+                prev_folds.append({
+                    "fold": int(r["fold"]),
+                    "train_accuracy": float(r["train_accuracy"]),
+                    "train_precision": float(r["train_precision"]),
+                    "train_recall": float(r["train_recall"]),
+                    "train_f1": float(r["train_f1"]),
+                    "val_accuracy": float(r["val_accuracy"]),
+                    "val_precision": float(r["val_precision"]),
+                    "val_recall": float(r["val_recall"]),
+                    "val_f1": float(r["val_f1"]),
+                    "seconds": float(r["seconds"]),
+                })
+        except Exception:
+            prev_folds = []
+
+    return status, prev_folds
+
+def _write_status(report_dir: str, status: Dict[str, Any]):
+    with open(os.path.join(report_dir, "status.json"), "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
 
 def run_kfold_experiment(
     cfg: Dict[str, Any],
@@ -103,8 +141,9 @@ def run_kfold_experiment(
     report_dir: Optional[str] = None,
     progress: bool = False,
     progress_prefix: str = "",
+    resume: bool = True,
 ) -> Dict[str, Any]:
-    """Executa K-Fold com logging detalhado de treinamento e salvamento incremental."""
+    """Executa K-Fold com persistência e retomada por fold."""
     ensure_dirs(run_dir)
     if report_dir:
         ensure_dirs(report_dir)
@@ -119,7 +158,6 @@ def run_kfold_experiment(
     k = int(cfg.get("k_folds", 5))
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
 
-    # arquivos de saída por configuração
     folds_csv = os.path.join(report_dir or run_dir, "folds.csv")
     train_csv = os.path.join(report_dir or run_dir, "train_progress.csv")
     train_log = os.path.join(report_dir or run_dir, "train.log")
@@ -127,7 +165,6 @@ def run_kfold_experiment(
     summary_json = os.path.join(report_dir or run_dir, "summary.json")
     cfg_yaml = os.path.join(report_dir or run_dir, "config.yaml")
 
-    # logger de treinamento
     logger = make_text_logger(train_log, prefix=f"{progress_prefix}  ")
 
     # snapshot de config
@@ -136,28 +173,59 @@ def run_kfold_experiment(
     except Exception:
         pass
 
-    # status inicial
-    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
-    status = {"started_at": started_at, "k_folds": k, "last_fold_completed": 0, "done": False, "failed": False}
-    with open(status_json, "w", encoding="utf-8") as f:
-        json.dump(status, f, ensure_ascii=False, indent=2)
+    # Se já finalizado, retorna summary e evita retrabalho
+    if resume and os.path.exists(summary_json):
+        with open(summary_json, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # Carrega progresso anterior
+    prev_status, prev_folds = _load_previous_progress(report_dir or run_dir)
+    last_completed = int(prev_status.get("last_fold_completed", 0)) if prev_status else 0
+    started_at = prev_status.get("started_at") if prev_status else time.strftime("%Y-%m-%d %H:%M:%S")
+
+    status = {
+        "started_at": started_at,
+        "k_folds": k,
+        "last_fold_completed": last_completed,
+        "done": False,
+        "failed": False,
+    }
+    _write_status(report_dir or run_dir, status)
 
     if progress:
         print(
             f"{progress_prefix} dataset={cfg['dataset']['name']} | fm={fm_type} | "
             f"ansatz={cfg['ansatz']['type']} d={cfg['ansatz']['params']['depth']} | "
-            f"opt={cfg['optimizer']['type']} | wires={wires}",
+            f"opt={cfg['optimizer']['type']} | wires={wires} | resume={resume} last_done={last_completed}",
             flush=True,
         )
 
-    folds: List[Dict[str, Any]] = []
-    t0_all = time.time()
-
-    # constrói circuito uma vez para predições
+    # constrói circuito fora do loop p/ inferência
     _, circuit = build_vqc(cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), wires,
                            feature_map=fm_type, shots=cfg["device"].get("shots"))
 
-    for i, (idx_tr, idx_va) in enumerate(skf.split(X, y), start=1):
+    # sinal para término gracioso (garante status salvo no fim do fold)
+    terminate_now = {"flag": False}
+    def _handle_sigterm(signum, frame):
+        terminate_now["flag"] = True
+        logger(f"[signal {signum}] graceful stop requested; finishing current fold...")
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle_sigterm)
+        except Exception:
+            pass
+
+    folds: List[Dict[str, Any]] = prev_folds[:] if prev_folds else []
+    t0_all = time.time()
+
+    # gera splits determinísticos
+    splits = list(skf.split(X, y))
+
+    # começa do próximo fold após last_completed
+    for i, (idx_tr, idx_va) in enumerate(splits, start=1):
+        if i <= last_completed:
+            continue
+
         t0 = time.time()
         X_tr, y_tr = X[idx_tr], y[idx_tr]
         X_va, y_va = X[idx_va], y[idx_va]
@@ -166,14 +234,14 @@ def run_kfold_experiment(
             print(f"{progress_prefix}  [fold {i}/{k}] training...", flush=True)
         logger(f"[fold {i}/{k}] start")
 
-        # treina (com logs/CSV internos)
+        # treino (com logs/CSV internos)
         Wf, bf = _train_one_fold_get_params(
             cfg, X_tr, y_tr, X_va, y_va,
             progress_logger=logger,
             train_progress_csv=train_csv,
         )
 
-        # métricas finais do fold
+        # métricas do fold
         logits_tr = _predict_logits(circuit, Wf, bf, X_tr)
         m_tr = all_metrics(y_tr, logits_tr)
         logits_va = _predict_logits(circuit, Wf, bf, X_va)
@@ -197,14 +265,25 @@ def run_kfold_experiment(
 
         status["last_fold_completed"] = i
         status["last_fold_seconds"] = float(dt)
-        with open(status_json, "w", encoding="utf-8") as f:
-            json.dump(status, f, ensure_ascii=False, indent=2)
+        _write_status(report_dir or run_dir, status)
 
         logger(f"[fold {i}/{k}] "
                f"train acc={m_tr['accuracy']:.4f} f1={m_tr['f1']:.4f} | "
                f"val acc={m_va['accuracy']:.4f} f1={m_va['f1']:.4f} ({dt:.1f}s)")
 
-    # resumo (médias nas dobras) — validação
+        if terminate_now["flag"]:
+            logger("[graceful stop] exiting after fold completion.")
+            # Não grava summary para sinalizar que faltam folds
+            return {
+                "objective_name": "accuracy",
+                "seconds_total": float(time.time() - t0_all),
+                "val_mean": {},
+                "train_mean": {},
+                "folds": folds,
+                "partial": True,
+            }
+
+    # resumo final
     mean_val = {
         "accuracy": float(np.mean([f["val_accuracy"] for f in folds])),
         "precision": float(np.mean([f["val_precision"] for f in folds])),
@@ -238,8 +317,7 @@ def run_kfold_experiment(
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     status["done"] = True
-    with open(status_json, "w", encoding="utf-8") as f:
-        json.dump(status, f, ensure_ascii=False, indent=2)
+    _write_status(report_dir or run_dir, status)
 
     if progress:
         print(

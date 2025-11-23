@@ -101,6 +101,21 @@ def _belongs_to_shard(combo_idx_1based: int, shard_index: Optional[int], shard_t
         return True
     return ((combo_idx_1based - 1) % shard_total) == shard_index
 
+def _tag_is_done(rep_dir: str) -> bool:
+    """Evita recomputo: se summary existe ou status.done==True, considera concluído."""
+    ssum = os.path.join(rep_dir, "summary.json")
+    if os.path.exists(ssum):
+        return True
+    sst = os.path.join(rep_dir, "status.json")
+    if os.path.exists(sst):
+        try:
+            with open(sst, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            return bool(st.get("done", False))
+        except Exception:
+            return False
+    return False
+
 def main(
     datasets_dir="configs/datasets", feature_maps_dir="configs/feature_maps",
     ansatz_dir="configs/ansatz", ga_grid_path="configs/hypergrids/ga.yaml",
@@ -109,7 +124,7 @@ def main(
     include_feature_maps="amplitude,zz", max_wires=12, dry_run=False,
     trace=False, abort_on_fail=False, limit: int = 0,
     shard_index: Optional[int] = None, shard_total: Optional[int] = None,
-    print_total_only: bool = False,
+    print_total_only: bool = False, resume: bool = True,
 ):
     setup_cwd_to_repo_root()
     ensure_dirs(reports_dir, runs_dir)
@@ -142,10 +157,22 @@ def main(
 
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[SWEEP] start={started_at} total_combos={total_combos}", flush=True)
-    print(f"[SWEEP] include_feature_maps={include_feature_maps} max_wires={max_wires} dry_run={dry_run} abort_on_fail={abort_on_fail} trace={trace} limit={limit}", flush=True)
+    print(f"[SWEEP] include_feature_maps={include_feature_maps} max_wires={max_wires} dry_run={dry_run} abort_on_fail={abort_on_fail} trace={trace} limit={limit} resume={resume}", flush=True)
     print(f"[SWEEP] shards: index={shard_index} total={shard_total}", flush=True)
 
+    # status do sweep (por shard)
+    sweep_status_path = os.path.join(reports_dir, f"sweep_status.{os.getenv('SLURM_JOB_ID','nojid')}.{os.getenv('SLURM_ARRAY_TASK_ID','noaid')}.json")
+    def _write_sweep_status(**kw):
+        s = {"started_at": started_at, "total_combos": total_combos,
+             "shard_index": shard_index, "shard_total": shard_total}
+        s.update(kw)
+        with open(sweep_status_path, "w", encoding="utf-8") as f:
+            json.dump(s, f, ensure_ascii=False, indent=2)
+
     combo_idx = 0
+    done_count = 0
+    _write_sweep_status(done=done_count, last_tag=None, last_time=None)
+
     for ds in DS:
         for fm in FM:
             try:
@@ -173,6 +200,14 @@ def main(
                             continue
 
                         tag = _tag(cfgC, classical_params=params)
+                        rep_dir = os.path.join(reports_dir, tag)
+
+                        if resume and _tag_is_done(rep_dir):
+                            print(f"[{combo_idx}/{total_combos}] {tag} [SKIP DONE]", flush=True)
+                            done_count += 1
+                            _write_sweep_status(done=done_count, last_tag=tag, last_time=time.strftime("%Y-%m-%d %H:%M:%S"))
+                            continue
+
                         prefix = f"[{combo_idx}/{total_combos}] {tag}"
                         if dry_run:
                             print(f"{prefix} [DRY]", flush=True)
@@ -180,8 +215,6 @@ def main(
 
                         run_dir = make_run_dir(runs_dir)
                         write_yaml(cfgC, os.path.join(run_dir, "config_snapshot.yaml"))
-
-                        rep_dir = os.path.join(reports_dir, tag)
                         ensure_dirs(rep_dir)
                         write_yaml(cfgC, os.path.join(rep_dir, "config.yaml"))
 
@@ -191,17 +224,19 @@ def main(
                                 cfgC, run_dir,
                                 report_dir=rep_dir,
                                 progress=True,
-                                progress_prefix=prefix
+                                progress_prefix=prefix,
+                                resume=resume,
                             )
                         except Exception as e:
                             print(f"{prefix} [FAIL] {e}", flush=True)
                             if trace:
                                 print(traceback.format_exc(), flush=True)
+                            # marca status como failed
                             try:
-                                with open(os.path.join(rep_dir, "status.json"), "r+", encoding="utf-8") as f:
-                                    st = json.load(f)
-                                    st["failed"] = True
-                                    f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
+                                st_path = os.path.join(rep_dir, "status.json")
+                                st = {"done": False, "failed": True, "last_error": str(e)}
+                                with open(st_path, "w", encoding="utf-8") as f:
+                                    json.dump(st, f, ensure_ascii=False, indent=2)
                             except Exception:
                                 pass
                             if abort_on_fail:
@@ -222,6 +257,8 @@ def main(
                             "std_accuracy": std_acc,
                             "objective_name": summary.get("objective_name",""),
                         })
+                        done_count += 1
+                        _write_sweep_status(done=done_count, last_tag=tag, last_time=time.strftime("%Y-%m-%d %H:%M:%S"))
 
                 for cfgG, ga_params in _iter_ga(base_cfg, GA_GRID):
                     combo_idx += 1
@@ -231,6 +268,14 @@ def main(
                         continue
 
                     tag = _tag(cfgG, ga_params=ga_params)
+                    rep_dir = os.path.join(reports_dir, tag)
+
+                    if resume and _tag_is_done(rep_dir):
+                        print(f"[{combo_idx}/{total_combos}] {tag} [SKIP DONE]", flush=True)
+                        done_count += 1
+                        _write_sweep_status(done=done_count, last_tag=tag, last_time=time.strftime("%Y-%m-%d %H:%M:%S"))
+                        continue
+
                     prefix = f"[{combo_idx}/{total_combos}] {tag}"
                     if dry_run:
                         print(f"{prefix} [DRY]", flush=True)
@@ -238,8 +283,6 @@ def main(
 
                     run_dir = make_run_dir(runs_dir)
                     write_yaml(cfgG, os.path.join(run_dir, "config_snapshot.yaml"))
-
-                    rep_dir = os.path.join(reports_dir, tag)
                     ensure_dirs(rep_dir)
                     write_yaml(cfgG, os.path.join(rep_dir, "config.yaml"))
 
@@ -249,17 +292,18 @@ def main(
                             cfgG, run_dir,
                             report_dir=rep_dir,
                             progress=True,
-                            progress_prefix=prefix
+                            progress_prefix=prefix,
+                            resume=resume,
                         )
                     except Exception as e:
                         print(f"{prefix} [FAIL] {e}", flush=True)
                         if trace:
                             print(traceback.format_exc(), flush=True)
                         try:
-                            with open(os.path.join(rep_dir, "status.json"), "r+", encoding="utf-8") as f:
-                                st = json.load(f)
-                                st["failed"] = True
-                                f.seek(0); json.dump(st, f, ensure_ascii=False, indent=2); f.truncate()
+                            st_path = os.path.join(rep_dir, "status.json")
+                            st = {"done": False, "failed": True, "last_error": str(e)}
+                            with open(st_path, "w", encoding="utf-8") as f:
+                                json.dump(st, f, ensure_ascii=False, indent=2)
                         except Exception:
                             pass
                         if abort_on_fail:
@@ -280,9 +324,11 @@ def main(
                         "std_accuracy": std_acc,
                         "objective_name": summary.get("objective_name",""),
                     })
+                    done_count += 1
+                    _write_sweep_status(done=done_count, last_tag=tag, last_time=time.strftime("%Y-%m-%d %H:%M:%S"))
 
 def entrypoint():
-    ap = argparse.ArgumentParser(description="Sweep com sharding SLURM e gravação incremental.")
+    ap = argparse.ArgumentParser(description="Sweep com sharding SLURM, resume e gravação incremental.")
     ap.add_argument("--datasets_dir", default="configs/datasets")
     ap.add_argument("--feature_maps_dir", default="configs/feature_maps")
     ap.add_argument("--ansatz_dir", default="configs/ansatz")
@@ -299,6 +345,7 @@ def entrypoint():
     ap.add_argument("--shard_index", type=int, default=None)
     ap.add_argument("--shard_total", type=int, default=None)
     ap.add_argument("--print_total_only", action="store_true")
+    ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()
     main(**vars(args))
 
