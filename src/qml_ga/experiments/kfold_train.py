@@ -22,8 +22,9 @@ def _train_one_fold_get_params(
     X_tr, y_tr, X_va=None, y_va=None,
     progress_logger=None,
     train_progress_csv: Optional[str] = None,
-) -> Tuple[np.ndarray, float]:
-    """Treina e retorna (W, b)."""
+    checkpoint_dir: Optional[str] = None,
+) -> Tuple[np.ndarray, float, Dict[str, Any]]:
+    """Treina e retorna (W, b, extras)."""
     n_qubits = int(cfg["device"]["wires"])
     depth = int(cfg["ansatz"]["params"]["depth"])
     ansatz_type = cfg["ansatz"]["type"]
@@ -36,10 +37,11 @@ def _train_one_fold_get_params(
     b0 = 0.0
 
     opt_type = cfg["optimizer"]["type"].lower()
+    objective = cfg.get("objective_name", "accuracy")
 
     if opt_type == "ga":
         ga = cfg["optimizer"]["ga"]
-        num_genes = depth * n_qubits * P + 1  # W flatten + bias
+        num_genes = depth * n_qubits * P + 1
 
         def f_train(sol_vec):
             w, b = sol_vec[:-1], sol_vec[-1]
@@ -79,25 +81,26 @@ def _train_one_fold_get_params(
         )
         w, b = sol[:-1], sol[-1]
         W = unflatten_weights(w, ansatz_type, n_qubits, depth)
-        return W, float(b)
+        return W, float(b), {"mid_checkpoint": None, "objective": objective}
 
-    # clássicos
+    # clássicos: 200 épocas únicas com checkpoint na época 100
     cls = cfg["optimizer"]["classical"]
-    Wf, bf, _ = train_classical(
+    Wf, bf, extras = train_classical(
         circuit, qnp.array(W0), b0,
         X_train=X_tr, y_train=y_tr,
         optimizer_type=opt_type, lr=float(cls["lr"]),
         epochs=int(cls["epochs"]), batch_size=int(cls["batch_size"]),
         progress_logger=progress_logger,
         train_progress_csv=train_progress_csv,
-        log_batch_every=0,  # pode ajustar para logs por batch; epoch já loga
         eval_every=1,
         X_val=X_va, y_val=y_va,
+        objective=objective,
+        mid_checkpoint_epoch=int(cfg.get("mid_checkpoint_epoch", 100)),
+        checkpoint_dir=checkpoint_dir,
     )
-    return np.array(Wf), float(bf)
+    return np.array(Wf), float(bf), extras
 
 def _load_previous_progress(report_dir: str):
-    """Carrega progresso salvo: status.json e folds.csv, se existirem."""
     status_path = os.path.join(report_dir, "status.json")
     folds_path = os.path.join(report_dir, "folds.csv")
 
@@ -124,6 +127,8 @@ def _load_previous_progress(report_dir: str):
                     "val_precision": float(r["val_precision"]),
                     "val_recall": float(r["val_recall"]),
                     "val_f1": float(r["val_f1"]),
+                    "val_accuracy_e100": float(r.get("val_accuracy_e100", np.nan)),
+                    "val_f1_e100": float(r.get("val_f1_e100", np.nan)),
                     "seconds": float(r["seconds"]),
                 })
         except Exception:
@@ -143,7 +148,6 @@ def run_kfold_experiment(
     progress_prefix: str = "",
     resume: bool = True,
 ) -> Dict[str, Any]:
-    """Executa K-Fold com persistência e retomada por fold."""
     ensure_dirs(run_dir)
     if report_dir:
         ensure_dirs(report_dir)
@@ -166,19 +170,15 @@ def run_kfold_experiment(
     cfg_yaml = os.path.join(report_dir or run_dir, "config.yaml")
 
     logger = make_text_logger(train_log, prefix=f"{progress_prefix}  ")
-
-    # snapshot de config
     try:
         write_yaml(cfg, cfg_yaml)
     except Exception:
         pass
 
-    # Se já finalizado, retorna summary e evita retrabalho
     if resume and os.path.exists(summary_json):
         with open(summary_json, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # Carrega progresso anterior
     prev_status, prev_folds = _load_previous_progress(report_dir or run_dir)
     last_completed = int(prev_status.get("last_fold_completed", 0)) if prev_status else 0
     started_at = prev_status.get("started_at") if prev_status else time.strftime("%Y-%m-%d %H:%M:%S")
@@ -200,11 +200,9 @@ def run_kfold_experiment(
             flush=True,
         )
 
-    # constrói circuito fora do loop p/ inferência
     _, circuit = build_vqc(cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), wires,
                            feature_map=fm_type, shots=cfg["device"].get("shots"))
 
-    # sinal para término gracioso (garante status salvo no fim do fold)
     terminate_now = {"flag": False}
     def _handle_sigterm(signum, frame):
         terminate_now["flag"] = True
@@ -217,11 +215,8 @@ def run_kfold_experiment(
 
     folds: List[Dict[str, Any]] = prev_folds[:] if prev_folds else []
     t0_all = time.time()
-
-    # gera splits determinísticos
     splits = list(skf.split(X, y))
 
-    # começa do próximo fold após last_completed
     for i, (idx_tr, idx_va) in enumerate(splits, start=1):
         if i <= last_completed:
             continue
@@ -234,18 +229,26 @@ def run_kfold_experiment(
             print(f"{progress_prefix}  [fold {i}/{k}] training...", flush=True)
         logger(f"[fold {i}/{k}] start")
 
-        # treino (com logs/CSV internos)
-        Wf, bf = _train_one_fold_get_params(
+        Wf, bf, extras = _train_one_fold_get_params(
             cfg, X_tr, y_tr, X_va, y_va,
             progress_logger=logger,
             train_progress_csv=train_csv,
+            checkpoint_dir=(report_dir or run_dir),
         )
 
-        # métricas do fold
+        # final metrics E200
         logits_tr = _predict_logits(circuit, Wf, bf, X_tr)
         m_tr = all_metrics(y_tr, logits_tr)
         logits_va = _predict_logits(circuit, Wf, bf, X_va)
         m_va = all_metrics(y_va, logits_va)
+
+        # mid metrics E100 se existirem
+        e100_val_acc = np.nan
+        e100_val_f1 = np.nan
+        if extras.get("mid_checkpoint") and extras["mid_checkpoint"].get("metrics"):
+            e100_val_acc = float(extras["mid_checkpoint"]["metrics"].get("accuracy", np.nan))
+            e100_val_f1 = float(extras["mid_checkpoint"]["metrics"].get("f1", np.nan))
+
         dt = time.time() - t0
 
         row = {
@@ -258,6 +261,8 @@ def run_kfold_experiment(
             "val_precision": m_va["precision"],
             "val_recall": m_va["recall"],
             "val_f1": m_va["f1"],
+            "val_accuracy_e100": e100_val_acc,
+            "val_f1_e100": e100_val_f1,
             "seconds": float(dt),
         }
         folds.append(row)
@@ -265,15 +270,17 @@ def run_kfold_experiment(
 
         status["last_fold_completed"] = i
         status["last_fold_seconds"] = float(dt)
-        _write_status(report_dir or run_dir, status)
+        with open(status_json, "w", encoding="utf-8") as f:
+            json.dump(status, f, ensure_ascii=False, indent=2)
 
         logger(f"[fold {i}/{k}] "
                f"train acc={m_tr['accuracy']:.4f} f1={m_tr['f1']:.4f} | "
-               f"val acc={m_va['accuracy']:.4f} f1={m_va['f1']:.4f} ({dt:.1f}s)")
+               f"val acc={m_va['accuracy']:.4f} f1={m_va['f1']:.4f} "
+               f"(E100 val_acc={e100_val_acc:.4f} val_f1={e100_val_f1:.4f}) "
+               f"({dt:.1f}s)")
 
         if terminate_now["flag"]:
             logger("[graceful stop] exiting after fold completion.")
-            # Não grava summary para sinalizar que faltam folds
             return {
                 "objective_name": "accuracy",
                 "seconds_total": float(time.time() - t0_all),
@@ -283,7 +290,6 @@ def run_kfold_experiment(
                 "partial": True,
             }
 
-    # resumo final
     mean_val = {
         "accuracy": float(np.mean([f["val_accuracy"] for f in folds])),
         "precision": float(np.mean([f["val_precision"] for f in folds])),
@@ -302,6 +308,10 @@ def run_kfold_experiment(
         "recall": float(np.mean([f["train_recall"] for f in folds])),
         "f1": float(np.mean([f["train_f1"] for f in folds])),
     }
+    # também mede as médias das métricas de E100 se houver
+    if any(np.isfinite([f.get("val_accuracy_e100", np.nan) for f in folds])):
+        mean_val["accuracy_e100"] = float(np.nanmean([f.get("val_accuracy_e100", np.nan) for f in folds]))
+        mean_val["f1_e100"] = float(np.nanmean([f.get("val_f1_e100", np.nan) for f in folds]))
 
     total_s = time.time() - t0_all
     summary = {
@@ -317,12 +327,14 @@ def run_kfold_experiment(
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     status["done"] = True
-    _write_status(report_dir or run_dir, status)
+    with open(status_json, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
 
     if progress:
         print(
             f"{progress_prefix}  [done] "
-            f"val(mean): acc={mean_val['accuracy']:.4f} p={mean_val['precision']:.4f} r={mean_val['recall']:.4f} f1={mean_val['f1']:.4f} "
+            f"val(mean): acc={mean_val['accuracy']:.4f} f1={mean_val['f1']:.4f} "
+            f"E100(acc={mean_val.get('accuracy_e100', np.nan):.4f} f1={mean_val.get('f1_e100', np.nan):.4f}) "
             f"total={total_s/60:.1f}min",
             flush=True,
         )

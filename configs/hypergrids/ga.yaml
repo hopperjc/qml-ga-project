@@ -1,7 +1,7 @@
 ga:
   num_generations: [50]
   population_size: [50, 150]
-  selection_type: ["tournament", "steady-state"]
+  selection_type: ["tournament", "sss"]
   crossover_type: ["single_point", "two_points"]
   mutation_type: ["random", "adaptive"]
   crossover_probability: [0.8]

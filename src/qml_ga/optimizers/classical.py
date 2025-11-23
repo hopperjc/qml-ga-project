@@ -1,132 +1,162 @@
-from typing import Tuple, Callable, Optional
+from typing import Callable, Dict, Optional, Tuple, Any
+import os, time, json
 import numpy as np
 import pennylane as qml
 import pennylane.numpy as qnp
-from sklearn.utils import shuffle
+
 from qml_ga.metrics.classification import all_metrics
 from qml_ga.utils.logger import append_csv_row
 
-ProgressLogger = Optional[Callable[[str], None]]
+OptimType = qml.optimize.AdamOptimizer
+NesterovType = qml.optimize.NesterovMomentumOptimizer
 
-def _make_loss(circuit, X, y):
-    y = qnp.array(y, dtype=float)
-    def loss(W, b):
-        preds = qnp.array([circuit(W, x) + b for x in X])
-        return qnp.mean((preds - y) ** 2)
-    return loss
+def _make_optimizer(opt_name: str, lr: float):
+    opt_name = opt_name.lower()
+    if opt_name == "adam":
+        return qml.optimize.AdamOptimizer(stepsize=lr)
+    if opt_name in ("nesterov", "nesterov_momentum"):
+        return qml.optimize.NesterovMomentumOptimizer(stepsize=lr)
+    raise ValueError(f"Unsupported optimizer {opt_name}")
+
+def _batch_idx(n: int, batch_size: int, epoch: int):
+    # baralha por época de forma determinística
+    rng = np.random.default_rng(42 + epoch)
+    idx = np.arange(n)
+    rng.shuffle(idx)
+    for i in range(0, n, batch_size):
+        yield idx[i:i+batch_size]
 
 def train_classical(
-    circuit,
+    circuit: Callable,
     W0: qnp.ndarray,
     b0: float,
+    *,
     X_train: np.ndarray,
     y_train: np.ndarray,
-    optimizer_type: str = "adam",
-    lr: float = 0.05,
-    epochs: int = 50,
-    batch_size: int = 16,
-    # logging/progresso
-    progress_logger: ProgressLogger = None,
-    progress_csv_path: Optional[str] = None,
-    log_batch_every: int = 0,      # 0 = não logar por batch; >0 = logar a cada N batches
-    eval_every: int = 1,           # avalia métricas no fim de cada N épocas
+    optimizer_type: str,
+    lr: float,
+    epochs: int,
+    batch_size: int,
+    progress_logger: Optional[Callable[[str], None]] = None,
+    train_progress_csv: Optional[str] = None,
+    eval_every: int = 1,
     X_val: Optional[np.ndarray] = None,
     y_val: Optional[np.ndarray] = None,
-) -> Tuple[qnp.ndarray, float, float]:
+    objective: str = "accuracy",
+    mid_checkpoint_epoch: int = 100,
+    checkpoint_dir: Optional[str] = None,
+) -> Tuple[qnp.ndarray, float, Dict[str, Any]]:
     """
-    Treino MSE com Adam/Nesterov (PennyLane). Retorna (W, b, final_loss).
-    Faz logging por batch e por epoch, gravando CSV incremental.
+    Treina com Adam ou Nesterov e retorna:
+      W_final, b_final, extras
+    extras inclui mid_checkpoint com métricas até a época mid_checkpoint_epoch
+    e caminho do arquivo salvo.
+
+    O loss é MSE nos logits contra rótulos em {-1,+1}.
     """
-    optimizer_type = (optimizer_type or "adam").lower()
-    if optimizer_type == "adam":
-        opt = qml.AdamOptimizer(stepsize=lr)
-    elif optimizer_type == "nesterov":
-        try:
-            opt = qml.NesterovMomentumOptimizer(stepsize=lr, momentum=0.9)
-        except AttributeError:
-            opt = qml.GradientDescentOptimizer(stepsize=lr)
-    else:
-        raise ValueError(f"Otimizador desconhecido: {optimizer_type}")
 
-    W = qnp.array(W0, requires_grad=True)
-    b = qnp.array(b0, requires_grad=True)
+    def predict_logits(W, b, X):
+        return qnp.array([circuit(W, x) + b for x in X])
 
-    n = len(X_train)
-    y_train = qnp.array(y_train, dtype=float)
-    loss_fn = _make_loss(circuit, X_train, y_train)
+    def loss_mse(W, b, Xe, ye):
+        preds = predict_logits(W, b, Xe)
+        return qnp.mean((ye - preds) ** 2)
 
-    total_batches = int(np.ceil(n / batch_size))
-    for ep in range(epochs):
-        X_sh, y_sh = shuffle(X_train, y_train, random_state=ep)
-        epoch_loss_vals = []
+    opt = _make_optimizer(optimizer_type, lr)
 
-        for bi, s in enumerate(range(0, n, batch_size), start=1):
-            Xe = qnp.array(X_sh[s:s + batch_size], requires_grad=False)
-            ye = qnp.array(y_sh[s:s + batch_size], requires_grad=False)
+    W = W0.copy()
+    b = qnp.array(b0)
 
-            def step_loss(W_, b_):
-                preds = qnp.array([circuit(W_, x) + b_ for x in Xe])
-                return qnp.mean((preds - ye) ** 2)
+    best_mid = None
+    mid_saved = False
+    mid_epoch = int(mid_checkpoint_epoch)
 
-            res = opt.step_and_cost(step_loss, W, b)
-            # Compat: (W,b,loss) ou ((W,b),loss)
-            if isinstance(res, (list, tuple)) and len(res) == 3:
-                W, b, l = res
-            else:
-                (W, b), l = res
+    n = X_train.shape[0]
+    t0 = time.time()
 
-            epoch_loss_vals.append(float(l))
+    for epoch in range(1, epochs + 1):
+        # minibatches
+        for mb in _batch_idx(n, max(1, batch_size), epoch):
+            Xe = X_train[mb]
+            ye = y_train[mb]
 
-            if log_batch_every and (bi % log_batch_every == 0 or bi == total_batches):
-                msg = f"epoch {ep+1}/{epochs} batch {bi}/{total_batches} loss={float(l):.6f}"
-                if progress_logger: progress_logger(msg)
-                if progress_csv_path:
-                    append_csv_row(progress_csv_path, {
-                        "phase": "train_batch",
-                        "epoch": ep+1,
-                        "batch": bi,
-                        "batches_per_epoch": total_batches,
-                        "loss": float(l),
-                    })
+            # faz um passo de otimização conjunto em (W,b)
+            def cost(params_W, params_b):
+                return loss_mse(params_W, params_b, Xe, ye)
 
-        # fim da época: métricas de treino
-        preds_tr = qnp.array([circuit(W, x) + b for x in X_train])
-        m_tr = all_metrics(np.array(y_train), np.array(preds_tr))
-        msg_tail = f"train acc={m_tr['accuracy']:.4f} p={m_tr['precision']:.4f} r={m_tr['recall']:.4f} f1={m_tr['f1']:.4f} mean_loss={np.mean(epoch_loss_vals):.6f}"
+            W, b = opt.step(cost, W, b)
 
-        # validação opcional por época
-        if (ep + 1) % max(1, eval_every) == 0 and X_val is not None and y_val is not None:
-            preds_va = qnp.array([circuit(W, x) + b for x in X_val])
-            m_va = all_metrics(np.array(y_val), np.array(preds_va))
-            msg = f"epoch {ep+1}/{epochs} {msg_tail} | val acc={m_va['accuracy']:.4f} p={m_va['precision']:.4f} r={m_va['recall']:.4f} f1={m_va['f1']:.4f}"
-            if progress_logger: progress_logger(msg)
-            if progress_csv_path:
-                append_csv_row(progress_csv_path, {
-                    "phase": "epoch_end",
-                    "epoch": ep+1,
-                    "loss": float(np.mean(epoch_loss_vals)),
-                    "train_accuracy": m_tr["accuracy"],
-                    "train_precision": m_tr["precision"],
-                    "train_recall": m_tr["recall"],
-                    "train_f1": m_tr["f1"],
-                    "val_accuracy": m_va["accuracy"],
-                    "val_precision": m_va["precision"],
-                    "val_recall": m_va["recall"],
-                    "val_f1": m_va["f1"],
-                })
-        else:
-            msg = f"epoch {ep+1}/{epochs} {msg_tail}"
-            if progress_logger: progress_logger(msg)
-            if progress_csv_path:
-                append_csv_row(progress_csv_path, {
-                    "phase": "epoch_end",
-                    "epoch": ep+1,
-                    "loss": float(np.mean(epoch_loss_vals)),
-                    "train_accuracy": m_tr["accuracy"],
-                    "train_precision": m_tr["precision"],
-                    "train_recall": m_tr["recall"],
-                    "train_f1": m_tr["f1"],
+        # avaliação por época
+        if eval_every and (epoch % eval_every == 0):
+            # train
+            logits_tr = predict_logits(W, b, X_train)
+            m_tr = all_metrics(y_train, logits_tr)
+
+            # val
+            m_va = {}
+            if X_val is not None and y_val is not None:
+                logits_va = predict_logits(W, b, X_val)
+                m_va = all_metrics(y_val, logits_va)
+
+            # logging
+            if progress_logger:
+                if m_va:
+                    progress_logger(
+                        f"epoch {epoch}/{epochs} train acc={m_tr['accuracy']:.4f} f1={m_tr['f1']:.4f} "
+                        f"| val acc={m_va['accuracy']:.4f} f1={m_va['f1']:.4f}"
+                    )
+                else:
+                    progress_logger(
+                        f"epoch {epoch}/{epochs} train acc={m_tr['accuracy']:.4f} f1={m_tr['f1']:.4f}"
+                    )
+
+            if train_progress_csv is not None:
+                append_csv_row(train_progress_csv, {
+                    "epoch": epoch,
+                    "train_accuracy": float(m_tr["accuracy"]),
+                    "train_precision": float(m_tr["precision"]),
+                    "train_recall": float(m_tr["recall"]),
+                    "train_f1": float(m_tr["f1"]),
+                    "val_accuracy": float(m_va.get("accuracy", np.nan)),
+                    "val_precision": float(m_va.get("precision", np.nan)),
+                    "val_recall": float(m_va.get("recall", np.nan)),
+                    "val_f1": float(m_va.get("f1", np.nan)),
                 })
 
-    final_loss = float(loss_fn(W, b))
-    return W, float(b), final_loss
+            # guarda o melhor até a época 100
+            if epoch <= mid_epoch and m_va:
+                key = "accuracy" if objective == "accuracy" else "f1"
+                score = m_va.get(key, 0.0)
+                if best_mid is None or score > best_mid["score"]:
+                    best_mid = {
+                        "epoch": epoch,
+                        "score": float(score),
+                        "metrics": {k: float(v) for k, v in m_va.items()},
+                        "train_metrics": {k: float(v) for k, v in m_tr.items()},
+                        "W": np.asarray(W).tolist(),
+                        "b": float(b),
+                    }
+
+            if (not mid_saved) and epoch >= mid_epoch:
+                # salva snapshot com o melhor até a época 100
+                mid_saved = True
+                if checkpoint_dir is not None:
+                    path = os.path.join(checkpoint_dir, "checkpoint_epoch100.json")
+                    payload = best_mid if best_mid is not None else {
+                        "epoch": mid_epoch,
+                        "score": None,
+                        "metrics": {},
+                        "train_metrics": {},
+                        "W": np.asarray(W).tolist(),
+                        "b": float(b),
+                    }
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    # fim do treino
+    extras = {
+        "mid_checkpoint": best_mid,
+        "objective": objective,
+        "seconds_train": float(time.time() - t0),
+    }
+    return W, float(b), extras
