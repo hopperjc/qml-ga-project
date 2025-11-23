@@ -1,3 +1,4 @@
+#!/bin/bash
 #SBATCH --job-name=qmlga_setup
 #SBATCH --partition=long-complex
 #SBATCH --nodes=1
