@@ -11,10 +11,15 @@
 
 set -euo pipefail
 
-module load Python/3.10
-python -m venv $HOME/.venvs/qmlga-apuana
-source $HOME/.venvs/qmlga-apuana/bin/activate
-pip -q install --upgrade pip wheel setuptools
+ENV_NAME="qmlga"
+
+CONDA_HOME="$HOME/miniconda3"
+if [ -f "$CONDA_HOME/etc/profile.d/conda.sh" ]; then
+    source "$CONDA_HOME/etc/profile.d/conda.sh"
+else
+    eval "$("$CONDA_HOME/bin/conda" shell.bash hook)"
+fi
+conda activate "$ENV_NAME"
 
 [ -d "$HOME/qml-ga-project" ] || git clone --depth=1 https://github.com/hopperjc/qml-ga-project.git $HOME/qml-ga-project
 cd $HOME/qml-ga-project

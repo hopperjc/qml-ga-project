@@ -1,0 +1,23 @@
+{
+  "banknote_authentication": {
+    "n_rows": 1372,
+    "n_features": 4,
+    "n_classes": 2,
+    "clean_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\banknote_authentication\\dataset_clean.csv",
+    "normalized_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\banknote_authentication\\dataset_normalized.csv"
+  },
+  "breast_cancer_wdbc": {
+    "n_rows": 569,
+    "n_features": 30,
+    "n_classes": 2,
+    "clean_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\breast_cancer_wdbc\\dataset_clean.csv",
+    "normalized_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\breast_cancer_wdbc\\dataset_normalized.csv"
+  },
+  "sonar": {
+    "n_rows": 208,
+    "n_features": 60,
+    "n_classes": 2,
+    "clean_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\sonar\\dataset_clean.csv",
+    "normalized_csv": "c:\\Users\\hopper\\Documents\\Mestrado\\Quantica\\qml-ga-project\\data\\processed\\sonar\\dataset_normalized.csv"
+  }
+}
