@@ -10,3 +10,20 @@ runs/*_run
 .idea/
 .vscode/
 .pytest_cache/
+
+# Banca PDF extraction (auxiliary, see _extract_pdf.py / _extract_annots.py)
+_extract_pdf.py
+_extract_annots.py
+dissertacao/comentários_banca/*.extracted.txt
+dissertacao/comentários_banca/*.annots_only.txt
+poetry_error.log
+EXPERIMENTOS_RUIDO.md
+_standardize_dissertation.py
+_check_dissertation.py
+dissertacao/Evolutionary_Weight_Optimization_for_Variational_Quantum_Classifiers.extracted.txt
+dissertacao/artigos/*.extracted.txt
+dissertacao/apresentacao/extracted_media/
+_generate_no_noise_tables.py
+_zip_for_overleaf.py
+Dissertacao_Hopper_Overleaf.zip
+dissertacao/*
