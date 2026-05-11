@@ -30,7 +30,11 @@ def _train_one_fold_get_params(
     ansatz_type = cfg["ansatz"]["type"]
     fm_type = cfg["feature_map"]["type"]
 
-    _, circuit = build_vqc(ansatz_type, depth, n_qubits, feature_map=fm_type, shots=cfg["device"].get("shots"))
+    _, circuit = build_vqc(
+        ansatz_type, depth, n_qubits, feature_map=fm_type,
+        shots=cfg["device"].get("shots"),
+        noise_config=cfg["feature_map"].get("noise"),
+    )
     P = params_per_wire(ansatz_type)
 
     W0 = init_weights(ansatz_type, n_qubits, depth, scale=0.1, seed=42)
@@ -200,8 +204,11 @@ def run_kfold_experiment(
             flush=True,
         )
 
-    _, circuit = build_vqc(cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), wires,
-                           feature_map=fm_type, shots=cfg["device"].get("shots"))
+    _, circuit = build_vqc(
+        cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), wires,
+        feature_map=fm_type, shots=cfg["device"].get("shots"),
+        noise_config=cfg["feature_map"].get("noise"),
+    )
 
     terminate_now = {"flag": False}
     def _handle_sigterm(signum, frame):

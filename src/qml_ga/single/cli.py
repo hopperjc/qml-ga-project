@@ -143,8 +143,11 @@ def main(
         json.dump(status, f, ensure_ascii=False, indent=2)
 
     # circuito (para predições após treino)
-    _, circuit = build_vqc(cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), int(cfg["device"]["wires"]),
-                           feature_map=cfg["feature_map"]["type"], shots=cfg["device"].get("shots"))
+    _, circuit = build_vqc(
+        cfg["ansatz"]["type"], int(cfg["ansatz"]["params"]["depth"]), int(cfg["device"]["wires"]),
+        feature_map=cfg["feature_map"]["type"], shots=cfg["device"].get("shots"),
+        noise_config=cfg["feature_map"].get("noise"),
+    )
 
     # treino
     logger("START")
