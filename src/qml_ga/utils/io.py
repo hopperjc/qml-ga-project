@@ -1,8 +1,14 @@
-import os, time, yaml
+import os, time, uuid, yaml
 
 def ensure_dirs(*paths):
     for p in paths:
         os.makedirs(p, exist_ok=True)
+
+def make_run_id() -> str:
+    """Identificador estável de uma execução (sweep ou worker), usado em nomes de arquivos
+    de índice e status. Combina timestamp + sufixo hexadecimal curto para evitar colisões
+    entre processos paralelos."""
+    return time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
 def load_yaml(path: str):
     with open(path, "r", encoding="utf-8") as f:
