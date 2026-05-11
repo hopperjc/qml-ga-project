@@ -1,0 +1,10 @@
+# Amplitude encoding com amplitude damping aplicado APÓS o feature map (γ=0.01).
+# Modela erro de preparação de estado coerente com o encoding via amplitudes.
+feature_map:
+  type: "amplitude"
+  params:
+    normalize: true
+  noise:
+    after_feature_map:
+      type: amplitude_damping
+      gamma: 0.01

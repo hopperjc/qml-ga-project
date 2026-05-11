@@ -1,0 +1,11 @@
+# ZZ feature map com phase damping APÓS o feature map (γ=0.01).
+# Phase damping é fisicamente coerente com encoding por rotações de fase (ZZ).
+feature_map:
+  type: "zz"
+  params:
+    reps: 2
+    entanglement: "full"
+  noise:
+    after_feature_map:
+      type: phase_damping
+      gamma: 0.01

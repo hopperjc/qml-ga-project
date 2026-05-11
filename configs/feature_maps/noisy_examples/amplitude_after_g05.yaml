@@ -1,0 +1,9 @@
+# Amplitude encoding com amplitude damping APÓS o feature map (γ=0.05) — regime moderado.
+feature_map:
+  type: "amplitude"
+  params:
+    normalize: true
+  noise:
+    after_feature_map:
+      type: amplitude_damping
+      gamma: 0.05

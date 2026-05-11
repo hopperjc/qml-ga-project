@@ -1,0 +1,15 @@
+# Amplitude encoding com amplitude damping em DOIS pontos:
+#   1) após o feature map (γ=0.01) — modela erro de preparação
+#   2) após cada camada do ansatz (γ=0.005) — modela decoerência durante a execução
+# Regime "realista" mais lento mas mais coerente com hardware NISQ.
+feature_map:
+  type: "amplitude"
+  params:
+    normalize: true
+  noise:
+    after_feature_map:
+      type: amplitude_damping
+      gamma: 0.01
+    per_ansatz_layer:
+      type: amplitude_damping
+      gamma: 0.005
