@@ -6,11 +6,6 @@ Compara AG (via PyGAD) contra otimizadores por gradiente (Adam, Nesterov Momentu
 seis topologias de ansatz (C1–C6), profundidades (L ∈ {6, 15, 20}) e **regime de ruído quântico**
 (amplitude/phase damping parametrizados).
 
-> **Status (2026-05):** infraestrutura SLURM removida; paralelismo agora via
-> `concurrent.futures.ProcessPoolExecutor`. Suporte a ruído quântico via `default.mixed` (canais de
-> *amplitude* e *phase damping* parametrizados por γ) adicionado. Suíte de testes `pytest`
-> cobrindo as invariantes críticas dos canais de ruído.
-
 ---
 
 ## Sumário
@@ -138,10 +133,6 @@ poetry run qmlga-sweep --workers 4 --shard_index 1 --shard_total 2 --resume
 
 Cada combinação é roteada para um único shard via `(idx-1) % shard_total == shard_index`.
 
-> **Histórico:** o sharding antes era automático via variáveis `SLURM_*` (cluster CIN-UFPE).
-> Após a refatoração pós-banca, toda a infraestrutura SLURM foi removida — sharding agora é
-> argumento explícito do CLI.
-
 ### Experimento isolado
 
 ```bash
@@ -194,15 +185,6 @@ idêntico ao pré-refatoração.
 
 **Configurações de referência prontas** em [`configs/feature_maps/noisy_examples/`](configs/feature_maps/noisy_examples/):
 6 YAMLs cobrindo regimes `after_*` e `combined`, com γ ∈ {0.01, 0.05}.
-
-Para rodar uma varredura completa só com configs ruidosas:
-```bash
-poetry run qmlga-sweep \
-    --feature_maps_dir configs/feature_maps/noisy_examples \
-    --include_feature_maps amplitude,zz \
-    --workers 4 --resume
-```
-
 
 ---
 
@@ -262,7 +244,3 @@ Trabalho prévio do autor publicado em IJCNN 2025:
 ```
 
 ---
-
-## Licença
-
-Centro de Informática — Universidade Federal de Pernambuco (CIN-UFPE).
