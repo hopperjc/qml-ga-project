@@ -7,14 +7,14 @@ readme = "README.md"
 packages = [{ include = "qml_ga", from = "src" }]
 
 [tool.poetry.dependencies]
-python = ">=3.12"
+python = ">=3.12,<3.13"
 
 # Núcleo científico (versões estáveis no Windows + Py3.12)
-numpy = ">=1.26,<2.0"
-scipy = ">=1.11,<2.0"
-pandas = "^2.2"
-matplotlib = "^3.8"
-PyYAML = "^6.0"
+numpy = ">=1.26"
+scipy = ">=1.11"
+pandas = ">=2.2"
+matplotlib = ">=3.8"
+PyYAML = ">=6.0"
 
 # ML clássico
 scikit-learn = "^1.5"
@@ -52,3 +52,12 @@ qmlga-single = "qml_ga.single.cli:entrypoint"
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: end-to-end smoke tests (slower; deselect with -m 'not smoke')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
