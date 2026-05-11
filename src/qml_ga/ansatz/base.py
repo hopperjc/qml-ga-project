@@ -1,4 +1,4 @@
-from typing import Dict, Sequence
+from typing import Callable, Dict, Optional, Sequence
 import pennylane.numpy as qnp
 
 # parâmetros por wire em UMA camada
@@ -37,7 +37,19 @@ from .ansatz_4 import ansatz_4
 from .ansatz_5 import ansatz_5
 from .ansatz_6 import ansatz_6
 
-def apply_ansatz(ansatz_type: str, W, wires: Sequence[int], depth: int):
+def apply_ansatz(
+    ansatz_type: str,
+    W,
+    wires: Sequence[int],
+    depth: int,
+    per_layer_callback: Optional[Callable[[int], None]] = None,
+):
+    """Apply `depth` layers of the chosen ansatz to `wires`.
+
+    If `per_layer_callback` is given, it is invoked with the layer index `d`
+    AFTER each layer is laid down. Used to interleave noise channels between
+    parameterized layers when a density-matrix device is active.
+    """
     if W.ndim != 3:
         raise ValueError(f"Esperado W com 3 dims (depth, n_wires, P); recebi {W.shape}")
     n_wires = len(wires)
@@ -60,3 +72,5 @@ def apply_ansatz(ansatz_type: str, W, wires: Sequence[int], depth: int):
             ansatz_6(W[d], wires)
         else:
             raise ValueError(f"Ansatz desconhecido: {ansatz_type}")
+        if per_layer_callback is not None:
+            per_layer_callback(d)
